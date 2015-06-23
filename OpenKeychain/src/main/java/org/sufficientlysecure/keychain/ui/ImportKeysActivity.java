@@ -35,9 +35,12 @@ import org.sufficientlysecure.keychain.keyimport.ImportKeysListEntry;
 import org.sufficientlysecure.keychain.keyimport.ParcelableKeyRing;
 import org.sufficientlysecure.keychain.operations.results.ImportKeyResult;
 import org.sufficientlysecure.keychain.operations.results.OperationResult;
+import org.sufficientlysecure.keychain.service.ImportKeyringParcel;
 import org.sufficientlysecure.keychain.service.KeychainService;
+import org.sufficientlysecure.keychain.service.SaveKeyringParcel;
 import org.sufficientlysecure.keychain.ui.base.BaseNfcActivity;
 import org.sufficientlysecure.keychain.service.ServiceProgressHandler;
+import org.sufficientlysecure.keychain.ui.base.CryptoOperationHelper;
 import org.sufficientlysecure.keychain.ui.util.KeyFormattingUtils;
 import org.sufficientlysecure.keychain.ui.util.Notify;
 import org.sufficientlysecure.keychain.util.Log;
@@ -47,7 +50,8 @@ import org.sufficientlysecure.keychain.util.ParcelableFileCache.IteratorWithSize
 import java.io.IOException;
 import java.util.ArrayList;
 
-public class ImportKeysActivity extends BaseNfcActivity {
+public class ImportKeysActivity extends BaseNfcActivity
+        implements CryptoOperationHelper.Callback<ImportKeyringParcel, ImportKeyResult> {
 
     public static final String ACTION_IMPORT_KEY = OpenKeychainIntents.IMPORT_KEY;
     public static final String ACTION_IMPORT_KEY_FROM_KEYSERVER = OpenKeychainIntents.IMPORT_KEY_FROM_KEYSERVER;
@@ -81,6 +85,10 @@ public class ImportKeysActivity extends BaseNfcActivity {
     private ImportKeysListFragment mListFragment;
     private Fragment mTopFragment;
     private View mImportButton;
+
+    // for CryptoOperationHelper.Callback
+    private String mKeyserver;
+    private ArrayList<ParcelableKeyRing> mKeyList;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -388,23 +396,10 @@ public class ImportKeysActivity extends BaseNfcActivity {
             return;
         }
 
-        ServiceProgressHandler serviceHandler = new ServiceProgressHandler(this) {
-            @Override
-            public void handleMessage(Message message) {
-                // handle messages by standard KeychainIntentServiceHandler first
-                super.handleMessage(message);
-
-                ImportKeysActivity.this.handleMessage(message);
-            }
-        };
-
-        // Send all information needed to service to import key in other thread
-        Intent intent = new Intent(this, KeychainService.class);
-
-        intent.setAction(KeychainService.ACTION_IMPORT_KEYRING);
-
-        // fill values for this action
-        Bundle data = new Bundle();
+        CryptoOperationHelper<ImportKeyringParcel, ImportKeyResult> operationHelper
+                = new CryptoOperationHelper<ImportKeyringParcel, ImportKeyResult>(
+                this, this, R.string.progress_importing
+        );
 
         ImportKeysListFragment.LoaderState ls = mListFragment.getLoaderState();
         if (ls instanceof ImportKeysListFragment.BytesLoaderState) {
@@ -423,30 +418,18 @@ public class ImportKeysActivity extends BaseNfcActivity {
                         new ParcelableFileCache<>(this, "key_import.pcl");
                 cache.writeCache(selectedEntries);
 
-                intent.putExtra(KeychainService.EXTRA_DATA, data);
+                mKeyList = null;
+                mKeyserver = null;
+                operationHelper.cryptoOperation();
 
-                // Create a new Messenger for the communication back
-                Messenger messenger = new Messenger(serviceHandler);
-                intent.putExtra(KeychainService.EXTRA_MESSENGER, messenger);
-
-                // show progress dialog
-                serviceHandler.showProgressDialog(
-                        getString(R.string.progress_importing),
-                        ProgressDialog.STYLE_HORIZONTAL,
-                        true
-                );
-
-                // start service with intent
-                startService(intent);
             } catch (IOException e) {
                 Log.e(Constants.TAG, "Problem writing cache file", e);
                 Notify.create(this, "Problem writing cache file!", Notify.Style.ERROR)
                         .show((ViewGroup) findViewById(R.id.import_snackbar));
             }
         } else if (ls instanceof ImportKeysListFragment.CloudLoaderState) {
-            ImportKeysListFragment.CloudLoaderState sls = (ImportKeysListFragment.CloudLoaderState) ls;
-
-            data.putString(KeychainService.IMPORT_KEY_SERVER, sls.mCloudPrefs.keyserver);
+            ImportKeysListFragment.CloudLoaderState sls =
+                    (ImportKeysListFragment.CloudLoaderState) ls;
 
             // get selected key entries
             ArrayList<ParcelableKeyRing> keys = new ArrayList<>();
@@ -459,22 +442,11 @@ public class ImportKeysActivity extends BaseNfcActivity {
                     );
                 }
             }
-            data.putParcelableArrayList(KeychainService.IMPORT_KEY_LIST, keys);
 
-            intent.putExtra(KeychainService.EXTRA_DATA, data);
+            mKeyList = keys;
+            mKeyserver = sls.mCloudPrefs.keyserver;
+            operationHelper.cryptoOperation();
 
-            // Create a new Messenger for the communication back
-            Messenger messenger = new Messenger(serviceHandler);
-            intent.putExtra(KeychainService.EXTRA_MESSENGER, messenger);
-
-            // show progress dialog
-            serviceHandler.showProgressDialog(
-                    getString(R.string.progress_importing),
-                    ProgressDialog.STYLE_HORIZONTAL, true
-            );
-
-            // start service with intent
-            startService(intent);
         }
     }
 
@@ -484,5 +456,27 @@ public class ImportKeysActivity extends BaseNfcActivity {
         super.onNfcPerform();
         // either way, finish afterwards
         finish();
+    }
+
+    // methods from CryptoOperationHelper.Callback
+
+    @Override
+    public ImportKeyringParcel createOperationInput() {
+        return new ImportKeyringParcel(mKeyList, mKeyserver);
+    }
+
+    @Override
+    public void onCryptoOperationSuccess(ImportKeyResult result) {
+        result.createNotify(this).show();
+    }
+
+    @Override
+    public void onCryptoOperationCancelled() {
+        // do nothing
+    }
+
+    @Override
+    public void onCryptoOperationError(ImportKeyResult result) {
+        result.createNotify(this).show();
     }
 }
