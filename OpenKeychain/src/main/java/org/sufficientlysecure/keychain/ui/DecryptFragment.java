@@ -17,6 +17,7 @@
 
 package org.sufficientlysecure.keychain.ui;
 
+import java.lang.reflect.Array;
 import java.util.ArrayList;
 
 import android.content.Intent;
@@ -25,6 +26,7 @@ import android.net.Uri;
 import android.os.Bundle;
 import android.os.Message;
 import android.os.Messenger;
+import android.os.Parcelable;
 import android.support.v4.app.LoaderManager;
 import android.support.v4.content.CursorLoader;
 import android.support.v4.content.Loader;
@@ -48,10 +50,12 @@ import org.sufficientlysecure.keychain.pgp.exception.PgpKeyNotFoundException;
 import org.sufficientlysecure.keychain.provider.KeychainContract;
 import org.sufficientlysecure.keychain.provider.KeychainContract.KeyRings;
 import org.sufficientlysecure.keychain.provider.ProviderHelper;
+import org.sufficientlysecure.keychain.service.ImportKeyringParcel;
 import org.sufficientlysecure.keychain.service.KeychainService;
 import org.sufficientlysecure.keychain.service.ServiceProgressHandler;
 import org.sufficientlysecure.keychain.ui.base.CachingCryptoOperationFragment;
 import org.sufficientlysecure.keychain.ui.base.CryptoOperationFragment;
+import org.sufficientlysecure.keychain.ui.base.CryptoOperationHelper;
 import org.sufficientlysecure.keychain.ui.util.KeyFormattingUtils;
 import org.sufficientlysecure.keychain.ui.util.KeyFormattingUtils.State;
 import org.sufficientlysecure.keychain.ui.util.Notify;
@@ -80,6 +84,8 @@ public abstract class DecryptFragment
 
     private OpenPgpSignatureResult mSignatureResult;
     private DecryptVerifyResult mDecryptVerifyResult;
+
+    private CryptoOperationHelper<ImportKeyringParcel, ImportKeyResult> mImportOpHelper;
 
     @Override
     public void onViewCreated(View view, Bundle savedInstanceState) {
@@ -133,40 +139,15 @@ public abstract class DecryptFragment
 
     private void lookupUnknownKey(long unknownKeyId) {
 
-        // Message is received after importing is done in KeychainService
-        ServiceProgressHandler serviceHandler = new ServiceProgressHandler(getActivity()) {
-            @Override
-            public void handleMessage(Message message) {
-                // handle messages by standard KeychainIntentServiceHandler first
-                super.handleMessage(message);
-
-                if (message.arg1 == MessageStatus.OKAY.ordinal()) {
-                    // get returned data bundle
-                    Bundle returnData = message.getData();
-
-                    if (returnData == null) {
-                        return;
-                    }
-
-                    final ImportKeyResult result =
-                            returnData.getParcelable(OperationResult.EXTRA_RESULT);
-
-                    result.createNotify(getActivity()).show();
-
-                    getLoaderManager().restartLoader(LOADER_ID_UNIFIED, null, DecryptFragment.this);
-                }
-            }
-        };
-
-        // fill values for this action
-        Bundle data = new Bundle();
+        final ArrayList<ParcelableKeyRing> keyList;
+        final String keyserver;
 
         // search config
         {
             Preferences prefs = Preferences.getPreferences(getActivity());
             Preferences.CloudSearchPrefs cloudPrefs =
                     new Preferences.CloudSearchPrefs(true, true, prefs.getPreferredKeyserver());
-            data.putString(KeychainService.IMPORT_KEY_SERVER, cloudPrefs.keyserver);
+            keyserver = cloudPrefs.keyserver;
         }
 
         {
@@ -175,19 +156,38 @@ public abstract class DecryptFragment
             ArrayList<ParcelableKeyRing> selectedEntries = new ArrayList<>();
             selectedEntries.add(keyEntry);
 
-            data.putParcelableArrayList(KeychainService.IMPORT_KEY_LIST, selectedEntries);
+            keyList = selectedEntries;
         }
 
-        // Send all information needed to service to query keys in other thread
-        Intent intent = new Intent(getActivity(), KeychainService.class);
-        intent.setAction(KeychainService.ACTION_IMPORT_KEYRING);
-        intent.putExtra(KeychainService.EXTRA_DATA, data);
+        CryptoOperationHelper.Callback<ImportKeyringParcel, ImportKeyResult> callback
+                = new CryptoOperationHelper.Callback<ImportKeyringParcel, ImportKeyResult>() {
 
-        // Create a new Messenger for the communication back
-        Messenger messenger = new Messenger(serviceHandler);
-        intent.putExtra(KeychainService.EXTRA_MESSENGER, messenger);
+            @Override
+            public ImportKeyringParcel createOperationInput() {
+                return new ImportKeyringParcel(keyList, keyserver);
+            }
 
-        getActivity().startService(intent);
+            @Override
+            public void onCryptoOperationSuccess(ImportKeyResult result) {
+                result.createNotify(getActivity()).show();
+
+                getLoaderManager().restartLoader(LOADER_ID_UNIFIED, null, DecryptFragment.this);
+            }
+
+            @Override
+            public void onCryptoOperationCancelled() {
+                // do nothing
+            }
+
+            @Override
+            public void onCryptoOperationError(ImportKeyResult result) {
+                result.createNotify(getActivity()).show();
+            }
+        };
+
+        mImportOpHelper = new CryptoOperationHelper<>(this, callback, R.string.progress_importing);
+
+        mImportOpHelper.cryptoOperation();
     }
 
     private void showKey(long keyId) {
@@ -465,4 +465,11 @@ public abstract class DecryptFragment
 
     protected abstract void onVerifyLoaded(boolean hideErrorOverlay);
 
+    @Override
+    public void onActivityResult(int requestCode, int resultCode, Intent data) {
+        if (mImportOpHelper != null) {
+            mImportOpHelper.handleActivityResult(requestCode, resultCode, data);
+        }
+        super.onActivityResult(requestCode, resultCode, data);
+    }
 }
