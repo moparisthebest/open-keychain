@@ -17,12 +17,10 @@
 
 package org.sufficientlysecure.keychain.ui;
 
-import android.app.ProgressDialog;
 import android.content.Intent;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.Message;
-import android.os.Messenger;
 import android.support.v4.app.Fragment;
 import android.view.View;
 import android.view.View.OnClickListener;
@@ -36,8 +34,6 @@ import org.sufficientlysecure.keychain.keyimport.ParcelableKeyRing;
 import org.sufficientlysecure.keychain.operations.results.ImportKeyResult;
 import org.sufficientlysecure.keychain.operations.results.OperationResult;
 import org.sufficientlysecure.keychain.service.ImportKeyringParcel;
-import org.sufficientlysecure.keychain.service.KeychainService;
-import org.sufficientlysecure.keychain.service.SaveKeyringParcel;
 import org.sufficientlysecure.keychain.ui.base.BaseNfcActivity;
 import org.sufficientlysecure.keychain.service.ServiceProgressHandler;
 import org.sufficientlysecure.keychain.ui.base.CryptoOperationHelper;
@@ -89,6 +85,8 @@ public class ImportKeysActivity extends BaseNfcActivity
     // for CryptoOperationHelper.Callback
     private String mKeyserver;
     private ArrayList<ParcelableKeyRing> mKeyList;
+
+    private CryptoOperationHelper<ImportKeyringParcel, ImportKeyResult> mOperationHelper;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -396,8 +394,7 @@ public class ImportKeysActivity extends BaseNfcActivity
             return;
         }
 
-        CryptoOperationHelper<ImportKeyringParcel, ImportKeyResult> operationHelper
-                = new CryptoOperationHelper<ImportKeyringParcel, ImportKeyResult>(
+        mOperationHelper = new CryptoOperationHelper<ImportKeyringParcel, ImportKeyResult>(
                 this, this, R.string.progress_importing
         );
 
@@ -420,7 +417,7 @@ public class ImportKeysActivity extends BaseNfcActivity
 
                 mKeyList = null;
                 mKeyserver = null;
-                operationHelper.cryptoOperation();
+                mOperationHelper.cryptoOperation();
 
             } catch (IOException e) {
                 Log.e(Constants.TAG, "Problem writing cache file", e);
@@ -445,7 +442,7 @@ public class ImportKeysActivity extends BaseNfcActivity
 
             mKeyList = keys;
             mKeyserver = sls.mCloudPrefs.keyserver;
-            operationHelper.cryptoOperation();
+            mOperationHelper.cryptoOperation();
 
         }
     }
@@ -458,6 +455,32 @@ public class ImportKeysActivity extends BaseNfcActivity
         finish();
     }
 
+    @Override
+    public void onActivityResult(int requestCode, int resultCode, Intent data) {
+        if (mOperationHelper == null ||
+                !mOperationHelper.handleActivityResult(requestCode, resultCode, data)) {
+            super.onActivityResult(requestCode, resultCode, data);
+        }
+    }
+
+    public void handleResult (ImportKeyResult result) {
+        if (ACTION_IMPORT_KEY_FROM_KEYSERVER_AND_RETURN_RESULT.equals(getIntent().getAction())
+                || ACTION_IMPORT_KEY_FROM_FILE_AND_RETURN.equals(getIntent().getAction())) {
+            Intent intent = new Intent();
+            intent.putExtra(ImportKeyResult.EXTRA_RESULT, result);
+            ImportKeysActivity.this.setResult(RESULT_OK, intent);
+            ImportKeysActivity.this.finish();
+            return;
+        }
+        if (ACTION_IMPORT_KEY_FROM_KEYSERVER_AND_RETURN_TO_SERVICE.equals(getIntent().getAction())) {
+            ImportKeysActivity.this.setResult(RESULT_OK, mPendingIntentData);
+            ImportKeysActivity.this.finish();
+            return;
+        }
+
+        result.createNotify(ImportKeysActivity.this)
+                .show((ViewGroup) findViewById(R.id.import_snackbar));
+    }
     // methods from CryptoOperationHelper.Callback
 
     @Override
@@ -467,7 +490,7 @@ public class ImportKeysActivity extends BaseNfcActivity
 
     @Override
     public void onCryptoOperationSuccess(ImportKeyResult result) {
-        result.createNotify(this).show();
+        handleResult(result);
     }
 
     @Override
@@ -477,6 +500,6 @@ public class ImportKeysActivity extends BaseNfcActivity
 
     @Override
     public void onCryptoOperationError(ImportKeyResult result) {
-        result.createNotify(this).show();
+        handleResult(result);
     }
 }
