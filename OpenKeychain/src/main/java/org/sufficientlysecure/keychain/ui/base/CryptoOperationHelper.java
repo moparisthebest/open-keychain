@@ -62,6 +62,11 @@ public class CryptoOperationHelper<T extends Parcelable, S extends OperationResu
     public static final int REQUEST_CODE_PASSPHRASE = 0x00008001;
     public static final int REQUEST_CODE_NFC = 0x00008002;
 
+    // keeps track of request code used to start an activity from this CryptoOperationHelper.
+    // this is necessary when multiple CryptoOperationHelpers are used in the same fragment/activity
+    // otherwise all CryptoOperationHandlers may respond to the same onActivityResult
+    private int mRequestedCode = -1;
+
     private int mProgressMessageString;
 
     private FragmentActivity mActivity;
@@ -117,10 +122,11 @@ public class CryptoOperationHelper<T extends Parcelable, S extends OperationResu
             case NFC_SIGN: {
                 Intent intent = new Intent(activity, NfcOperationActivity.class);
                 intent.putExtra(NfcOperationActivity.EXTRA_REQUIRED_INPUT, requiredInput);
+                mRequestedCode = REQUEST_CODE_NFC;
                 if (mUseFragment) {
-                    mFragment.startActivityForResult(intent, REQUEST_CODE_NFC);
+                    mFragment.startActivityForResult(intent, mRequestedCode);
                 } else {
-                    mActivity.startActivityForResult(intent, REQUEST_CODE_NFC);
+                    mActivity.startActivityForResult(intent, mRequestedCode);
                 }
                 return;
             }
@@ -129,10 +135,11 @@ public class CryptoOperationHelper<T extends Parcelable, S extends OperationResu
             case PASSPHRASE_SYMMETRIC: {
                 Intent intent = new Intent(activity, PassphraseDialogActivity.class);
                 intent.putExtra(PassphraseDialogActivity.EXTRA_REQUIRED_INPUT, requiredInput);
+                mRequestedCode = REQUEST_CODE_PASSPHRASE;
                 if (mUseFragment) {
-                    mFragment.startActivityForResult(intent, REQUEST_CODE_PASSPHRASE);
+                    mFragment.startActivityForResult(intent, mRequestedCode);
                 } else {
-                    mActivity.startActivityForResult(intent, REQUEST_CODE_PASSPHRASE);
+                    mActivity.startActivityForResult(intent, mRequestedCode);
                 }
                 return;
             }
@@ -152,6 +159,13 @@ public class CryptoOperationHelper<T extends Parcelable, S extends OperationResu
      */
     public boolean handleActivityResult(int requestCode, int resultCode, Intent data) {
         Log.d("PHILIP", "received activity result in OperationHelper");
+
+        if (mRequestedCode != requestCode) {
+            // this wasn't meant for us to handle
+            return false;
+        } else {
+            mRequestedCode = -1;
+        }
         if (resultCode == Activity.RESULT_CANCELED) {
             mCallback.onCryptoOperationCancelled();
             return true;
@@ -187,10 +201,12 @@ public class CryptoOperationHelper<T extends Parcelable, S extends OperationResu
 
     protected void dismissProgress() {
         FragmentManager fragmentManager =
-                mUseFragment ? mFragment.getFragmentManager() : mActivity.getSupportFragmentManager();
+                mUseFragment ? mFragment.getFragmentManager() :
+                        mActivity.getSupportFragmentManager();
 
         ProgressDialogFragment progressDialogFragment =
-                (ProgressDialogFragment) fragmentManager.findFragmentByTag(ServiceProgressHandler.TAG_PROGRESS_DIALOG);
+                (ProgressDialogFragment) fragmentManager.findFragmentByTag(
+                        ServiceProgressHandler.TAG_PROGRESS_DIALOG);
 
         if (progressDialogFragment == null) {
             return;
